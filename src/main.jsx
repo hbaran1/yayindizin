@@ -263,9 +263,6 @@ function App() {
         </div>
         <nav>
           <a className="active">Dosya Tara</a>
-          <a>Kaynaklar</a>
-          <a>Kural Setleri</a>
-          <a>Raporlar</a>
         </nav>
       </aside>
 
