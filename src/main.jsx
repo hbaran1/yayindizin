@@ -519,6 +519,7 @@ function MetadataEditor({ metadata, onChange, disabled }) {
 }
 
 function VerificationResult({ verification }) {
+  const indexes = verification.indexes || [];
   return (
     <div className="verification">
       <div className={`result-banner ${verification.status === "found" ? "ok" : "warn"}`}>
@@ -529,6 +530,17 @@ function VerificationResult({ verification }) {
           </a>
         )}
       </div>
+
+      {indexes.length > 0 && (
+        <div className="index-list-box">
+          <strong>Tarandığı dizinler ({indexes.length})</strong>
+          <ul>
+            {indexes.map((idx) => (
+              <li key={idx}>{idx}</li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       <table>
         <thead>

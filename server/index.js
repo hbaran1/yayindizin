@@ -585,7 +585,9 @@ async function verifyEvidence(metadata) {
     if (coverage.warning) warnings.push(coverage.warning);
   }
 
-  const journalWebEvidence = publication ? null : await findJournalIndexPage(journal?.source, normalized.journal);
+  // Her zaman dergi indeks sayfasini sorgula (yalnizca fallback degil) — bir dergi
+  // birden cok dizinde bulunabilir, hepsini listelemek istiyoruz.
+  const journalWebEvidence = await findJournalIndexPage(journal?.source, normalized.journal);
   if (journalWebEvidence) {
     sources.push({
       label: "Dergi dizin sayfası",
@@ -595,8 +597,19 @@ async function verifyEvidence(metadata) {
     });
   }
 
+  // Tum dizinleri birlestir: TR Dizin (publication varsa) + dergi sayfasindan bulunanlar
+  const indexSet = new Set();
+  if (publication) indexSet.add("TR Dizin");
+  if (journal?.source?.journalDatabase?.length && !indexSet.has("TR Dizin")) {
+    indexSet.add("TR Dizin");
+  }
+  for (const idx of journalWebEvidence?.indexes || []) indexSet.add(idx);
+  const indexes = [...indexSet];
+
   const evidenceUrl = publication?.url || journalWebEvidence?.url || (journal ? `https://search.trdizin.gov.tr/tr/dergi/detay/${journal.source.id}` : "");
-  const indexName = publication ? "TR Dizin" : inferIndexName(journalWebEvidence, journal);
+  const indexName = indexes.length === 1
+    ? indexes[0]
+    : (indexes.length > 1 ? indexes.join(", ") : (publication ? "TR Dizin" : inferIndexName(journalWebEvidence, journal)));
 
   let status;
   let requiresManualUrl;
@@ -604,11 +617,15 @@ async function verifyEvidence(metadata) {
   if (publication?.url) {
     status = "found";
     requiresManualUrl = false;
-    message = "Yayın için kanıt sayfası bulundu.";
+    message = indexes.length > 1
+      ? `Yayın için kanıt sayfası bulundu. Dergi ${indexes.length} dizinde tarandı.`
+      : "Yayın için kanıt sayfası bulundu.";
   } else if (journalWebEvidence?.url) {
     status = "found";
     requiresManualUrl = false;
-    message = "Dergi dizin sayfası bulundu.";
+    message = indexes.length > 1
+      ? `Dergi dizin sayfası bulundu. Toplam ${indexes.length} dizin tespit edildi.`
+      : "Dergi dizin sayfası bulundu.";
   } else if (evidenceUrl) {
     status = "journal_only";
     requiresManualUrl = true;
@@ -624,6 +641,7 @@ async function verifyEvidence(metadata) {
     requiresManualUrl,
     evidenceUrl,
     indexName,
+    indexes,
     publication,
     journal,
     sources,
@@ -762,9 +780,18 @@ function getJournalCoverage(journal, year) {
 
 async function findJournalIndexPage(journal, journalName) {
   const candidates = [];
+  const webAddress = journal?.webAddress;
 
-  if (journal?.webAddress) {
-    const base = normalizeBaseUrl(journal.webAddress);
+  if (webAddress) {
+    const base = normalizeBaseUrl(webAddress);
+    // Dergi ana sayfasi (DergiPark ve OJS dergilerinde dizinler genelde anasayfada listelenir)
+    try {
+      const fullUrl = /^https?:\/\//i.test(webAddress) ? webAddress : `https://${webAddress}`;
+      const cleanFull = fullUrl.replace(/\/$/, "");
+      candidates.push(cleanFull);
+    } catch {}
+
+    // Standart dizin sayfasi yollari (kendi domain'i olan dergiler icin)
     candidates.push(
       `${base}/pages/abstracting-and-indexing`,
       `${base}/abstracting-and-indexing`,
@@ -772,16 +799,32 @@ async function findJournalIndexPage(journal, journalName) {
       `${base}/indexing`,
       `${base}/abstracting-indexing`,
       `${base}/tarandigi-dizinler`,
-      `${base}/dizinler`
+      `${base}/dizinler`,
+      `${base}/index`
     );
   }
 
-  for (const url of [...new Set(candidates)]) {
+  // Tum aday URL'leri sorgula, bulunan dizin terimlerini birlestir, ilk eslesmenin URL'sini DEK kanit URL'si olarak kullan
+  const collected = new Set();
+  let firstMatchedUrl = null;
+  const tried = new Set();
+  for (const url of candidates) {
+    if (tried.has(url)) continue;
+    tried.add(url);
     const page = await probeIndexPage(url);
-    if (page) return page;
+    if (page) {
+      for (const term of page.terms) collected.add(term);
+      if (!firstMatchedUrl) firstMatchedUrl = url;
+    }
   }
 
-  return null;
+  if (!firstMatchedUrl) return null;
+  const indexes = [...collected];
+  return {
+    url: firstMatchedUrl,
+    indexes,
+    details: indexes.length ? indexes.join(", ") : "Dizin sayfası bulundu."
+  };
 }
 
 function normalizeBaseUrl(value) {
@@ -793,36 +836,94 @@ function normalizeBaseUrl(value) {
 async function probeIndexPage(url) {
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 8000);
+    const timeout = setTimeout(() => controller.abort(), 10000);
     const response = await fetch(url, {
       signal: controller.signal,
-      headers: { "user-agent": "DergiDizinKanitSistemi/0.1" }
+      redirect: "follow",
+      headers: {
+        "user-agent": "Mozilla/5.0 (compatible; DergiDizinKanit/0.1)",
+        accept: "text/html,*/*"
+      }
     });
     clearTimeout(timeout);
     if (!response.ok) return null;
     const html = await response.text();
-    const lower = html.toLowerCase();
-    const hasIndexSignal = /(abstracting|indexing|scopus|web of science|esci|ulakbim|tr dizin|dizin)/i.test(lower);
-    if (!hasIndexSignal) return null;
-    return {
-      url,
-      details: extractIndexTerms(html).join(", ") || "Dizin sayfası bulundu."
-    };
+    const terms = extractIndexTerms(html);
+    if (!terms.length) return null;
+    return { url, terms };
   } catch {
     return null;
   }
 }
 
+// HTML icindeki goruntu alt-text'lerini ve link title'larini da kapsayan
+// metin cikarici. Cogu DergiPark dergisi dizinleri logo olarak gosterir,
+// label img alt metninde tutulur.
+function extractTextFromHtml(html) {
+  const altTexts = [...html.matchAll(/\b(?:alt|title)\s*=\s*["']([^"']+)["']/gi)].map((m) => m[1]);
+  const visibleText = html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
+  return [visibleText, ...altTexts].join(" ");
+}
+
 function extractIndexTerms(html) {
-  const text = html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
-  const terms = [
-    ["Emerging Sources Citation Index", /Emerging Sources Citation Index|ESCI/i],
-    ["Scopus", /Scopus/i],
-    ["TR Dizin", /TR\s*Dizin/i],
+  const text = extractTextFromHtml(html);
+
+  // Genis dizin tani kütüphanesi. Sira: en spesifik patterns ilk
+  const indexPatterns = [
+    ["Web of Science (SCI-EXPANDED)", /(?:Science\s*Citation\s*Index\s*Expanded|SCI[-\s]*EXPANDED|SCIE\b)/i],
+    ["Web of Science (SSCI)", /(?:Social\s*Sciences\s*Citation\s*Index|\bSSCI\b)/i],
+    ["Web of Science (AHCI)", /(?:Arts\s*&?\s*Humanities\s*Citation\s*Index|\bA[&\s]?HCI\b)/i],
+    ["Web of Science (ESCI)", /(?:Emerging\s*Sources\s*Citation\s*Index|\bESCI\b)/i],
+    ["Web of Science", /Web\s*of\s*Science|\bWoS\b|Clarivate/i],
+    ["Scopus", /\bScopus\b/i],
+    ["TR Dizin", /TR\s*Diz[ıi]n|TRDiz[ıi]n/i],
     ["ULAKBİM", /ULAKB[İI]M/i],
-    ["Web of Science", /Web of Science/i]
+    ["DOAJ", /(?:Directory\s*of\s*Open\s*Access\s*Journals|\bDOAJ\b)/i],
+    ["ERIH PLUS", /ERIH[-\s]*PLUS/i],
+    ["MLA International Bibliography", /MLA\s*(?:International\s*)?Bibliography/i],
+    ["EBSCO", /\bEBSCO(?:host)?\b/i],
+    ["ProQuest", /Pro\s*Quest/i],
+    ["JSTOR", /\bJSTOR\b/i],
+    ["Google Scholar", /Google\s*Scholar/i],
+    ["Index Copernicus", /Index\s*Copernicus|ICI\s*World\s*of\s*Journals/i],
+    ["Sobiad", /\bSobiad\b/i],
+    ["Asos İndeks", /Asos(?:\s*[Iİi]ndeks)?/i],
+    ["TÜBİTAK", /T[ÜU]B[İI]TAK/i],
+    ["CrossRef", /Cross\s*Ref/i],
+    ["WorldCat", /World\s*Cat/i],
+    ["PubMed", /Pub\s*Med/i],
+    ["Embase", /\bEmbase\b/i],
+    ["CINAHL", /\bCINAHL\b/i],
+    ["DBLP", /\bDBLP\b/i],
+    ["MathSciNet", /Math\s*Sci\s*Net/i],
+    ["zbMATH", /zb\s*MATH/i],
+    ["Index Islamicus", /Index\s*Islamicus/i],
+    ["Religious & Theological Abstracts", /Religious\s*(?:&|and)?\s*Theological\s*Abstracts/i],
+    ["ATLA Religion Database", /ATLA\s*Religion(?:\s*Database)?/i],
+    ["Scilit", /\bScilit\b/i],
+    ["Dimensions", /\bDimensions\b/i],
+    ["Lens.org", /\blens\.org\b/i],
+    ["BASE", /\bBASE\s*(?:Bielefeld|Search)/i],
+    ["OpenAIRE", /Open\s*AIRE/i],
+    ["CABI", /\bCABI\b|CAB\s*Direct/i],
+    ["Index Cerist", /Index\s*Cerist/i],
+    ["Türk Eğitim İndeksi", /T[üu]rk\s*E[ğg]itim\s*[İi]ndeksi/i],
+    ["İdealOnline", /[İi]deal\s*Online/i],
+    ["Akademia Sosyal Bilimler İndeksi (ASOS)", /Akademia\s*Sosyal\s*Bilimler\s*[İi]ndeksi/i],
+    ["DRJI", /\bDRJI\b|Directory\s*of\s*Research\s*Journals\s*Indexing/i],
+    ["ESJI", /\bESJI\b|Eurasian\s*Scientific\s*Journal\s*Index/i]
   ];
-  return terms.filter(([, regex]) => regex.test(text)).map(([label]) => label);
+
+  // Web of Science alt-koleksiyonlarindan biri varsa "Web of Science" genel etiketini gizle
+  const found = new Set();
+  for (const [label, regex] of indexPatterns) {
+    if (regex.test(text)) found.add(label);
+  }
+  const hasSpecificWos = ["Web of Science (SCI-EXPANDED)", "Web of Science (SSCI)", "Web of Science (AHCI)", "Web of Science (ESCI)"]
+    .some((l) => found.has(l));
+  if (hasSpecificWos) found.delete("Web of Science");
+
+  return [...found];
 }
 
 function inferIndexName(pageEvidence, journal) {
@@ -903,18 +1004,30 @@ function renderReportPage({ metadata = {}, verification = {}, capture = {} }) {
   const accessDate = new Intl.DateTimeFormat("tr-TR").format(date);
   const evidenceUrl = verification.evidenceUrl || capture.url || "";
   const screenshot = capture.screenshotUrl || "";
+  const indexes = Array.isArray(verification.indexes) ? verification.indexes : [];
   const indexName = verification.indexName || "Dizin kaydı";
   const publicationLine = buildPublicationLine(metadata);
-  const sourceNote = indexName === "TR Dizin"
-    ? "TR Dizin detay sayfasında bu yayına veya dergiye ait kayıt bulunmaktadır."
-    : "İlgili derginin dizin bilgisinin yer aldığı kaynak sayfa bulunmaktadır.";
+
+  const indexHeading = indexes.length > 1 ? "Tarandığı dizinler" : "Tarandığı dizin";
+  const indexBlock = indexes.length > 0
+    ? `<div class="index-box">
+        <strong>${indexHeading} (${indexes.length}):</strong>
+        <ul class="index-list">${indexes.map((i) => `<li>${safe(i)}</li>`).join("")}</ul>
+      </div>`
+    : `<div class="index-box"><strong>Tarandığı dizin:</strong><strong>${safe(indexName)}</strong></div>`;
+
+  const sourceNote = indexes.length > 1
+    ? "Aşağıda listelenen dizinler, derginin resmi sayfasında ve TR Dizin kaydında tespit edilmiştir."
+    : (indexName === "TR Dizin"
+      ? "TR Dizin detay sayfasında bu yayına veya dergiye ait kayıt bulunmaktadır."
+      : "İlgili derginin dizin bilgisinin yer aldığı kaynak sayfa bulunmaktadır.");
 
   return `<main class="page">
     <h1>DERGİNİN TARANDIĞI DİZİN</h1>
     <h2>1. Yayın kaydı</h2>
     <p>${safe(publicationLine)}</p>
     <h2>2. Dizin kaydı</h2>
-    <div class="index-box"><strong>Tarandığı dizin:</strong><strong>${safe(indexName)}</strong></div>
+    ${indexBlock}
     <h2>3. Kaynak</h2>
     <p>${safe(sourceNote)}<br />Erişim tarihi: ${safe(accessDate)}</p>
     <div class="link-box"><strong>Kanıt bağlantısı:</strong><br />${safe(evidenceUrl)}</div>
@@ -939,7 +1052,10 @@ function reportStyles() {
     h2 { margin: 24px 0 12px; color: #a71324; font-size: 22px; }
     p { font-size: 14.5px; line-height: 1.45; }
     .index-box { margin: 16px 0 24px; padding: 18px 22px; border: 1px solid #d8bfc3; background: #fbf7f8; border-radius: 8px; font-size: 17px; }
-    .index-box strong:last-child { margin-left: 12px; color: #a71324; font-size: 22px; }
+    .index-box > strong:first-child { display: block; margin-bottom: 8px; color: #5a1a23; font-size: 15px; }
+    .index-box strong:last-child:not(:first-child) { margin-left: 12px; color: #a71324; font-size: 22px; }
+    .index-list { margin: 0; padding-left: 22px; columns: 2; column-gap: 28px; }
+    .index-list li { margin: 4px 0; color: #a71324; font-weight: 700; font-size: 15px; break-inside: avoid; }
     .link-box { margin: 16px 0 24px; padding: 12px 16px; border: 1px solid #d7dde5; background: #f8fafc; border-radius: 8px; font-size: 13.5px; overflow-wrap: anywhere; }
     .browser { margin-top: 14px; border: 1px solid #d8dde5; border-radius: 8px; overflow: visible; }
     .bar { display: flex; align-items: center; gap: 8px; padding: 9px 12px; background: #f1f3f6; }

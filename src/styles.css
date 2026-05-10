@@ -458,6 +458,40 @@ th {
   color: #6e5207;
 }
 
+.index-list-box {
+  margin: 14px 0;
+  padding: 14px 18px;
+  border: 1px solid #c8d2df;
+  background: #f8fafc;
+  border-radius: 8px;
+}
+
+.index-list-box > strong {
+  display: block;
+  margin-bottom: 8px;
+  color: #1f3a5f;
+  font-size: 13px;
+}
+
+.index-list-box ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 4px 10px;
+}
+
+.index-list-box li {
+  padding: 4px 8px;
+  background: #fff;
+  border: 1px solid #d8dee8;
+  border-radius: 4px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #20242b;
+}
+
 .manual-url {
   display: flex;
   flex-wrap: wrap;
