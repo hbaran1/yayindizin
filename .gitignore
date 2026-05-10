@@ -5,3 +5,4 @@ server/evidence/
 server/reports/
 .DS_Store
 npm-debug.log*
+.claude/
