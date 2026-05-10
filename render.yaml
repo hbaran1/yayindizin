@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: dergi-dizin-kanit
+    name: dizin
     runtime: node
     plan: free
     region: frankfurt
