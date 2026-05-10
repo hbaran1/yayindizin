@@ -1,16 +1,14 @@
 services:
   - type: web
     name: yayindizin
-    runtime: node
+    runtime: docker
     plan: free
     region: frankfurt
-    buildCommand: npm install && npx playwright install chromium && npm run build
-    startCommand: npm start
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
     healthCheckPath: /api/health
     envVars:
       - key: NODE_ENV
         value: production
-      - key: NODE_VERSION
-        value: "20"
-      - key: PLAYWRIGHT_BROWSERS_PATH
-        value: /opt/render/.cache/ms-playwright
+      - key: PORT
+        value: "10000"
