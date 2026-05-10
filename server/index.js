@@ -258,7 +258,7 @@ function extractMetadata(rawText, fileName) {
 function cleanText(value) {
   return String(value || "")
     .replace(/\r/g, "\n")
-    .replace(/ /g, "")
+    .replace(/\u0000/g, "")
     .replace(/[ \t]+/g, " ")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
