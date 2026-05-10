@@ -1,6 +1,6 @@
 # Microsoft Playwright resmi imaji — Chromium ve tum sistem bagimliliklari hazir gelir.
 # Sürum, package.json'daki playwright versiyonu ile eşleşmeli (^1.57.0).
-FROM mcr.microsoft.com/playwright:v1.57.0-jammy
+FROM mcr.microsoft.com/playwright:v1.59.1-jammy
 
 WORKDIR /app
 
