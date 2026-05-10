@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: dizin
+    name: yayindizin
     runtime: node
     plan: free
     region: frankfurt
