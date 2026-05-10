@@ -302,28 +302,102 @@ async function fetchPdfByDoi(doi) {
   throw new Error(`PDF aday URL'lerinin hicbiri indirilemedi. ${errors.join(" | ")}`);
 }
 
-async function downloadPdfTo(url, doi) {
+async function fetchUrlContent(url, timeoutMs = 30000) {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 30000);
-  let response;
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    response = await fetch(url, {
+    const response = await fetch(url, {
       signal: controller.signal,
       redirect: "follow",
       headers: {
         "user-agent": "Mozilla/5.0 (compatible; DergiDizinKanit/0.1)",
-        accept: "application/pdf,*/*"
+        accept: "application/pdf,text/html,*/*"
       }
     });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const buffer = Buffer.from(await response.arrayBuffer());
+    return {
+      buffer,
+      contentType: response.headers.get("content-type") || "",
+      finalUrl: response.url || url
+    };
   } finally {
     clearTimeout(timeout);
   }
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+}
 
-  const buffer = Buffer.from(await response.arrayBuffer());
-  if (buffer.length < 1024) throw new Error(`Dosya cok kucuk (${buffer.length} bayt) — gecerli PDF degil`);
-  if (buffer.slice(0, 4).toString("ascii") !== "%PDF") {
-    throw new Error("Indirilen icerik PDF degil (HTML hata sayfasi olabilir)");
+function isPdfBuffer(buffer) {
+  return buffer.length > 1024 && buffer.slice(0, 4).toString("ascii") === "%PDF";
+}
+
+function extractPdfLinkFromHtml(html, baseUrl) {
+  const tryUrl = (raw) => {
+    if (!raw) return null;
+    try {
+      return new URL(raw, baseUrl).toString();
+    } catch {
+      return null;
+    }
+  };
+
+  // 1. citation_pdf_url meta tag (Highwire/Google Scholar standard, en yaygin)
+  let m = html.match(/<meta[^>]+name=["']citation_pdf_url["'][^>]+content=["']([^"']+)["']/i)
+    || html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+name=["']citation_pdf_url["']/i);
+  if (m) {
+    const u = tryUrl(m[1]);
+    if (u) return u;
+  }
+
+  // 2. <link rel=... type=application/pdf>
+  m = html.match(/<link[^>]+type=["']application\/pdf["'][^>]+href=["']([^"']+)["']/i)
+    || html.match(/<link[^>]+href=["']([^"']+)["'][^>]+type=["']application\/pdf["']/i);
+  if (m) {
+    const u = tryUrl(m[1]);
+    if (u) return u;
+  }
+
+  // 3. DergiPark / OJS pattern: /download/article-file/<id>
+  m = html.match(/href=["']([^"']*\/download\/article-file\/\d+)["']/i);
+  if (m) {
+    const u = tryUrl(m[1]);
+    if (u) return u;
+  }
+
+  // 4. Genel: .pdf uzantili anchor
+  m = html.match(/href=["']([^"']+\.pdf(?:\?[^"']*)?)["']/i);
+  if (m) {
+    const u = tryUrl(m[1]);
+    if (u) return u;
+  }
+
+  return null;
+}
+
+async function downloadPdfTo(url, doi) {
+  let { buffer, contentType, finalUrl } = await fetchUrlContent(url);
+
+  // Eger landing sayfasi (HTML) geldiyse icindeki PDF link'ini cikar ve onu indir
+  if (!isPdfBuffer(buffer)) {
+    const looksHtml = /text\/html/i.test(contentType)
+      || buffer.slice(0, 64).toString("utf8").trim().startsWith("<");
+    if (looksHtml) {
+      const html = buffer.toString("utf-8");
+      const pdfLink = extractPdfLinkFromHtml(html, finalUrl || url);
+      if (!pdfLink) {
+        throw new Error("Landing sayfasinda PDF bagi bulunamadi (acik erisim olmayabilir)");
+      }
+      console.log(`Landing sayfasindan PDF linki cikarildi: ${pdfLink}`);
+      ({ buffer } = await fetchUrlContent(pdfLink));
+      if (!isPdfBuffer(buffer)) {
+        throw new Error(`Cikarilan PDF linki gecerli PDF dondurmedi: ${pdfLink}`);
+      }
+    } else {
+      throw new Error("Indirilen icerik PDF degil");
+    }
+  }
+
+  if (buffer.length < 1024) {
+    throw new Error(`Dosya cok kucuk (${buffer.length} bayt) — gecerli PDF degil`);
   }
 
   const filename = crypto.randomBytes(16).toString("hex");
