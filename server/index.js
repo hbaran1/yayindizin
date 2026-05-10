@@ -809,26 +809,42 @@ async function findJournalIndexPage(journal, journalName) {
     } catch {}
   }
 
-  // Tum aday URL'leri PARALEL sorgula (sirayla 9 URL'i 10s timeout ile denemek
-  // 90s alabiliyor; paralel ~10s'e dusurur)
+  // 1. PASS — HTTP fetch (hizli, paralel). Cogu yayinci icin yeterli.
   const uniqueCandidates = [...new Set(candidates)];
-  const results = await Promise.all(
-    uniqueCandidates.map(async (url) => {
-      const page = await probeIndexPage(url);
-      return { url, page };
-    })
+  const httpResults = await Promise.all(
+    uniqueCandidates.map(async (url) => ({ url, page: await probeIndexPage(url) }))
   );
 
-  // En cok dizin gosteren sayfayi sec; esitlikte adaylar listesinde once gelen kazanir
   const collected = new Set();
   let bestUrl = null;
   let bestScore = 0;
-  for (const { url, page } of results) {
+  for (const { url, page } of httpResults) {
     if (!page) continue;
     for (const term of page.terms) collected.add(term);
     if (page.terms.length > bestScore) {
       bestScore = page.terms.length;
       bestUrl = url;
+    }
+  }
+
+  // 2. PASS — Cloudflare/bot-protection Playwright fallback. HTTP fetch sifir
+  // dizin getirdiyse (cogunlukla 403 yiyince) gercek tarayici ile dene. Yavas
+  // ama JS challenge'larini gecer.
+  if (collected.size === 0 && uniqueCandidates.length > 0) {
+    console.log(`[findJournalIndexPage] HTTP'den dizin gelmedi, Playwright fallback`);
+    // En olasi 2 URL: ilk dedicated path + homepage
+    const homepageUrl = uniqueCandidates[uniqueCandidates.length - 1];
+    const dedicatedUrl = uniqueCandidates[0];
+    const fallbackUrls = [...new Set([dedicatedUrl, homepageUrl])];
+    for (const url of fallbackUrls) {
+      const page = await probeIndexPageWithPlaywright(url);
+      if (page) {
+        for (const term of page.terms) collected.add(term);
+        if (page.terms.length > bestScore) {
+          bestScore = page.terms.length;
+          bestUrl = url;
+        }
+      }
     }
   }
 
@@ -839,6 +855,30 @@ async function findJournalIndexPage(journal, journalName) {
     indexes,
     details: indexes.length ? indexes.join(", ") : "Dizin sayfası bulundu."
   };
+}
+
+async function probeIndexPageWithPlaywright(url) {
+  let browser = null;
+  try {
+    browser = await chromium.launch({ headless: true });
+    const page = await browser.newPage({
+      viewport: { width: 1366, height: 1100 },
+      userAgent: BROWSER_UA,
+      locale: "tr-TR"
+    });
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
+    await page.waitForLoadState("networkidle", { timeout: 5000 }).catch(() => {});
+    const html = await page.content();
+    const terms = extractIndexTerms(html);
+    console.log(`[probeIndexPageWithPlaywright] ${url} -> ${terms.length} dizin: ${terms.join(", ")}`);
+    if (!terms.length) return null;
+    return { url, terms };
+  } catch (error) {
+    console.log(`[probeIndexPageWithPlaywright] ${url} -> ERROR: ${error.message}`);
+    return null;
+  } finally {
+    if (browser) await browser.close().catch(() => {});
+  }
 }
 
 function normalizeBaseUrl(value) {
