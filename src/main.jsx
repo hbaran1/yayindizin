@@ -253,19 +253,6 @@ function App() {
 
   return (
     <div className="app-shell">
-      <aside className="sidebar">
-        <div className="brand">
-          <div className="brand-mark">D</div>
-          <div>
-            <strong>Dizin Kanıt</strong>
-            <span>Rapor sistemi</span>
-          </div>
-        </div>
-        <nav>
-          <a className="active">Dosya Tara</a>
-        </nav>
-      </aside>
-
       <main className="workspace">
         <header className="topbar">
           <div>
