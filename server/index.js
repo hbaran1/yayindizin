@@ -847,25 +847,35 @@ function normalizeBaseUrl(value) {
   return `${parsed.protocol}//${parsed.host}`.replace(/\/$/, "");
 }
 
+const BROWSER_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+
 async function probeIndexPage(url) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15000);
   try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 6000);
     const response = await fetch(url, {
       signal: controller.signal,
       redirect: "follow",
       headers: {
-        "user-agent": "Mozilla/5.0 (compatible; DergiDizinKanit/0.1)",
-        accept: "text/html,*/*"
+        "user-agent": BROWSER_UA,
+        accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "accept-language": "tr-TR,tr;q=0.9,en;q=0.8",
+        "accept-encoding": "gzip, deflate, br"
       }
     });
     clearTimeout(timeout);
-    if (!response.ok) return null;
+    if (!response.ok) {
+      console.log(`[probeIndexPage] ${url} -> HTTP ${response.status}`);
+      return null;
+    }
     const html = await response.text();
     const terms = extractIndexTerms(html);
+    console.log(`[probeIndexPage] ${url} -> ${terms.length} dizin: ${terms.join(", ")}`);
     if (!terms.length) return null;
     return { url, terms };
-  } catch {
+  } catch (error) {
+    clearTimeout(timeout);
+    console.log(`[probeIndexPage] ${url} -> ERROR: ${error.message}`);
     return null;
   }
 }
