@@ -606,7 +606,12 @@ async function verifyEvidence(metadata) {
   for (const idx of journalWebEvidence?.indexes || []) indexSet.add(idx);
   const indexes = [...indexSet];
 
-  const evidenceUrl = publication?.url || journalWebEvidence?.url || (journal ? `https://search.trdizin.gov.tr/tr/dergi/detay/${journal.source.id}` : "");
+  // Ekran goruntusu icin: dergi dizin sayfasi (dizinlerin gorsel kaniti) oncelikli.
+  // Yayin URL'i (TR Dizin makale detay) ikincil, dergi detayi son care.
+  const evidenceUrl = journalWebEvidence?.url
+    || publication?.url
+    || (journal ? `https://search.trdizin.gov.tr/tr/dergi/detay/${journal.source.id}` : "");
+  const publicationUrl = publication?.url || "";
   const indexName = indexes.length === 1
     ? indexes[0]
     : (indexes.length > 1 ? indexes.join(", ") : (publication ? "TR Dizin" : inferIndexName(journalWebEvidence, journal)));
@@ -614,18 +619,16 @@ async function verifyEvidence(metadata) {
   let status;
   let requiresManualUrl;
   let message;
-  if (publication?.url) {
+  if (journalWebEvidence?.url) {
     status = "found";
     requiresManualUrl = false;
     message = indexes.length > 1
-      ? `Yayın için kanıt sayfası bulundu. Dergi ${indexes.length} dizinde tarandı.`
-      : "Yayın için kanıt sayfası bulundu.";
-  } else if (journalWebEvidence?.url) {
-    status = "found";
-    requiresManualUrl = false;
-    message = indexes.length > 1
-      ? `Dergi dizin sayfası bulundu. Toplam ${indexes.length} dizin tespit edildi.`
+      ? `Dergi dizin sayfası bulundu. ${indexes.length} dizinde tarandı.`
       : "Dergi dizin sayfası bulundu.";
+  } else if (publication?.url) {
+    status = "found";
+    requiresManualUrl = false;
+    message = "TR Dizin yayın kaydı bulundu.";
   } else if (evidenceUrl) {
     status = "journal_only";
     requiresManualUrl = true;
@@ -640,6 +643,7 @@ async function verifyEvidence(metadata) {
     status,
     requiresManualUrl,
     evidenceUrl,
+    publicationUrl,
     indexName,
     indexes,
     publication,
@@ -784,44 +788,54 @@ async function findJournalIndexPage(journal, journalName) {
 
   if (webAddress) {
     const base = normalizeBaseUrl(webAddress);
-    // Dergi ana sayfasi (DergiPark ve OJS dergilerinde dizinler genelde anasayfada listelenir)
-    try {
-      const fullUrl = /^https?:\/\//i.test(webAddress) ? webAddress : `https://${webAddress}`;
-      const cleanFull = fullUrl.replace(/\/$/, "");
-      candidates.push(cleanFull);
-    } catch {}
 
-    // Standart dizin sayfasi yollari (kendi domain'i olan dergiler icin)
+    // Once dedicated dizin sayfalari (en odakli, en iyi gorsel kanit)
     candidates.push(
       `${base}/pages/abstracting-and-indexing`,
       `${base}/abstracting-and-indexing`,
       `${base}/indexing-and-abstracting`,
-      `${base}/indexing`,
-      `${base}/abstracting-indexing`,
       `${base}/tarandigi-dizinler`,
       `${base}/dizinler`,
+      `${base}/indexing`,
+      `${base}/abstracting-indexing`,
       `${base}/index`
     );
+
+    // Sonra dergi ana sayfasi (DergiPark gibi dedicated yol olmayan platformlar icin)
+    try {
+      const fullUrl = /^https?:\/\//i.test(webAddress) ? webAddress : `https://${webAddress}`;
+      const cleanFull = fullUrl.replace(/\/$/, "");
+      if (!candidates.includes(cleanFull)) candidates.push(cleanFull);
+    } catch {}
   }
 
-  // Tum aday URL'leri sorgula, bulunan dizin terimlerini birlestir, ilk eslesmenin URL'sini DEK kanit URL'si olarak kullan
+  // Tum aday URL'leri PARALEL sorgula (sirayla 9 URL'i 10s timeout ile denemek
+  // 90s alabiliyor; paralel ~10s'e dusurur)
+  const uniqueCandidates = [...new Set(candidates)];
+  const results = await Promise.all(
+    uniqueCandidates.map(async (url) => {
+      const page = await probeIndexPage(url);
+      return { url, page };
+    })
+  );
+
+  // En cok dizin gosteren sayfayi sec; esitlikte adaylar listesinde once gelen kazanir
   const collected = new Set();
-  let firstMatchedUrl = null;
-  const tried = new Set();
-  for (const url of candidates) {
-    if (tried.has(url)) continue;
-    tried.add(url);
-    const page = await probeIndexPage(url);
-    if (page) {
-      for (const term of page.terms) collected.add(term);
-      if (!firstMatchedUrl) firstMatchedUrl = url;
+  let bestUrl = null;
+  let bestScore = 0;
+  for (const { url, page } of results) {
+    if (!page) continue;
+    for (const term of page.terms) collected.add(term);
+    if (page.terms.length > bestScore) {
+      bestScore = page.terms.length;
+      bestUrl = url;
     }
   }
 
-  if (!firstMatchedUrl) return null;
+  if (!bestUrl) return null;
   const indexes = [...collected];
   return {
-    url: firstMatchedUrl,
+    url: bestUrl,
     indexes,
     details: indexes.length ? indexes.join(", ") : "Dizin sayfası bulundu."
   };
@@ -836,7 +850,7 @@ function normalizeBaseUrl(value) {
 async function probeIndexPage(url) {
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 10000);
+    const timeout = setTimeout(() => controller.abort(), 6000);
     const response = await fetch(url, {
       signal: controller.signal,
       redirect: "follow",
