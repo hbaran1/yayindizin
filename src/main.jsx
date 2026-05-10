@@ -29,8 +29,6 @@ function App() {
   const verification = selectedRecord?.verification || null;
   const capture = selectedRecord?.capture || null;
   const report = selectedRecord?.report || null;
-  const canVerify = Boolean(metadata.doi || metadata.journal || metadata.title);
-  const evidenceUrl = verification?.evidenceUrl || manualUrl;
 
   const statusText = useMemo(() => {
     if (busy) return busy;
@@ -78,72 +76,52 @@ function App() {
     }
   }
 
-  async function handleVerify(recordId = selectedRecord?.id) {
-    const record = records.find((item) => item.id === recordId);
-    if (!record) return null;
+  async function processSingleRecord(initialRecord, label = "İşleniyor") {
+    let current = initialRecord;
+    setBusy(label);
 
-    setBusy("Kayıt aranıyor");
-    setError("");
-    updateRecord(record.id, { verification: null, capture: null, report: null });
-
-    try {
-      const data = await postJson("/api/verify", { metadata: record.metadata });
-      updateRecord(record.id, { verification: data, metadata: enrichMetadata(record.metadata, data) });
-      if (record.id === selectedRecord?.id && data.evidenceUrl) setManualUrl(data.evidenceUrl);
-      return data;
-    } catch (err) {
-      updateRecord(record.id, { status: "error", error: err.message });
-      setError(err.message);
+    const verified = await postJson("/api/verify", { metadata: current.metadata }).catch((err) => {
+      updateRecord(current.id, { status: "error", error: `Doğrulama: ${err.message}` });
       return null;
-    } finally {
-      setBusy("");
+    });
+    if (!verified) return null;
+
+    const enrichedMetadata = enrichMetadata(current.metadata, verified);
+    updateRecord(current.id, { verification: verified, metadata: enrichedMetadata, error: null });
+    current = { ...current, metadata: enrichedMetadata, verification: verified };
+
+    if (current.id === selectedRecord?.id && verified.evidenceUrl) {
+      setManualUrl(verified.evidenceUrl);
     }
-  }
 
-  async function handleCapture(recordId = selectedRecord?.id, explicitUrl = evidenceUrl) {
-    const record = records.find((item) => item.id === recordId);
-    const url = explicitUrl || record?.verification?.evidenceUrl;
-    if (!record || !url) return null;
+    if (!verified.evidenceUrl) {
+      updateRecord(current.id, { status: "needs-manual" });
+      return current;
+    }
 
-    setBusy("Ekran görüntüsü alınıyor");
-    setError("");
-    updateRecord(record.id, { capture: null, report: null });
-
-    try {
-      const data = await postJson("/api/capture", { url });
-      updateRecord(record.id, { capture: data });
-      return data;
-    } catch (err) {
-      updateRecord(record.id, { status: "error", error: err.message });
-      setError(err.message);
+    const shot = await postJson("/api/capture", { url: verified.evidenceUrl }).catch((err) => {
+      updateRecord(current.id, { status: "error", error: `Ekran görüntüsü: ${err.message}` });
       return null;
-    } finally {
-      setBusy("");
-    }
-  }
+    });
+    if (!shot) return current;
 
-  async function handleReport(recordId = selectedRecord?.id) {
-    const record = records.find((item) => item.id === recordId);
-    if (!record) return null;
+    updateRecord(current.id, { capture: shot, error: null });
+    current = { ...current, capture: shot };
 
-    setBusy("Son sayfa oluşturuluyor");
-    setError("");
-
-    try {
-      const data = await postJson("/api/report", {
-        metadata: record.metadata,
-        verification: record.verification,
-        capture: record.capture
-      });
-      updateRecord(record.id, { report: data });
-      return data;
-    } catch (err) {
-      updateRecord(record.id, { status: "error", error: err.message });
-      setError(err.message);
+    const oneReport = await postJson("/api/report", {
+      metadata: current.metadata,
+      verification: verified,
+      capture: shot
+    }).catch((err) => {
+      updateRecord(current.id, { status: "error", error: `Rapor: ${err.message}` });
       return null;
-    } finally {
-      setBusy("");
+    });
+
+    if (oneReport) {
+      updateRecord(current.id, { report: oneReport, status: "ok", error: null });
+      return { ...current, report: oneReport };
     }
+    return current;
   }
 
   async function processRecords(inputRecords = records) {
@@ -151,39 +129,54 @@ function App() {
     setError("");
     setExportPdfUrl("");
 
-    for (const record of inputRecords) {
+    for (let i = 0; i < inputRecords.length; i++) {
+      const record = inputRecords[i];
       setSelectedId(record.id);
-      setBusy(`İşleniyor: ${inputRecords.indexOf(record) + 1}/${inputRecords.length}`);
-
-      let current = record;
-      const verified = current.verification || await postJson("/api/verify", { metadata: current.metadata }).catch((err) => {
-        updateRecord(record.id, { status: "error", error: err.message });
-        return null;
-      });
-      if (!verified?.evidenceUrl) continue;
-      const enrichedMetadata = enrichMetadata(current.metadata, verified);
-      updateRecord(record.id, { verification: verified, metadata: enrichedMetadata });
-
-      const shot = await postJson("/api/capture", { url: verified.evidenceUrl }).catch((err) => {
-        updateRecord(record.id, { status: "error", error: err.message });
-        return null;
-      });
-      if (!shot) continue;
-      updateRecord(record.id, { capture: shot });
-
-      current = { ...current, metadata: enrichedMetadata, verification: verified, capture: shot };
-      const oneReport = await postJson("/api/report", {
-        metadata: current.metadata,
-        verification: verified,
-        capture: shot
-      }).catch((err) => {
-        updateRecord(record.id, { status: "error", error: err.message });
-        return null;
-      });
-      if (oneReport) updateRecord(record.id, { report: oneReport, status: "ok" });
+      await processSingleRecord(record, `İşleniyor: ${i + 1}/${inputRecords.length}`);
     }
 
     setBusy("");
+  }
+
+  async function handleProcessSingle(recordId) {
+    const record = records.find((item) => item.id === recordId);
+    if (!record) return;
+    setError("");
+    setSelectedId(record.id);
+    updateRecord(record.id, { verification: null, capture: null, report: null, status: "ok", error: null });
+    try {
+      await processSingleRecord({ ...record, verification: null, capture: null, report: null }, "Bu kayıt işleniyor");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function handleExportSingle(recordId) {
+    const record = records.find((item) => item.id === recordId);
+    if (!record) return;
+    if (!record.verification || !record.capture) {
+      setError("Bu kayıt henüz dışa aktarmaya hazır değil. Önce doğrulama ve ekran görüntüsünün tamamlanması gerekir.");
+      return;
+    }
+
+    setBusy("PDF hazırlanıyor");
+    setError("");
+
+    try {
+      const data = await postJson("/api/export-pdf", {
+        items: [{
+          uploadId: record.uploadId,
+          metadata: record.metadata,
+          verification: record.verification,
+          capture: record.capture
+        }]
+      });
+      window.open(data.pdfUrl, "_blank", "noopener,noreferrer");
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy("");
+    }
   }
 
   async function handleBulkExport() {
@@ -235,6 +228,27 @@ function App() {
     setSelectedId("");
     setExportPdfUrl("");
     setManualUrl("");
+  }
+
+  async function handleManualCapture() {
+    if (!selectedRecord || !manualUrl) return;
+    setBusy("Ekran görüntüsü alınıyor");
+    setError("");
+    try {
+      const data = await postJson("/api/capture", { url: manualUrl });
+      updateRecord(selectedRecord.id, { capture: data, error: null });
+      const reportData = await postJson("/api/report", {
+        metadata: selectedRecord.metadata,
+        verification: selectedRecord.verification,
+        capture: data
+      }).catch(() => null);
+      if (reportData) updateRecord(selectedRecord.id, { report: reportData, status: "ok" });
+    } catch (err) {
+      updateRecord(selectedRecord.id, { status: "error", error: `Manuel görüntü: ${err.message}` });
+      setError(err.message);
+    } finally {
+      setBusy("");
+    }
   }
 
   return (
@@ -304,15 +318,36 @@ function App() {
             {records.length > 0 && (
               <div className="record-list">
                 {records.map((record, index) => (
-                  <button
-                    type="button"
+                  <div
                     key={record.id}
-                    className={`record-row ${record.id === selectedRecord?.id ? "selected" : ""}`}
-                    onClick={() => selectRecord(record)}
+                    className={`record-row ${record.id === selectedRecord?.id ? "selected" : ""} ${record.status === "error" ? "has-error" : ""}`}
                   >
-                    <span>{index + 1}. {record.metadata.title || "Başlık okunamadı"}</span>
-                    <small>{record.report ? "Rapor hazır" : record.capture ? "Görüntü alındı" : record.verification ? "Kayıt bulundu" : "Okundu"}</small>
-                  </button>
+                    <button type="button" className="record-main" onClick={() => selectRecord(record)}>
+                      <span>{index + 1}. {record.metadata.title || record.fileName || "Başlık okunamadı"}</span>
+                      <small>{describeRecordStatus(record)}</small>
+                      {record.error && <em className="record-error">{record.error}</em>}
+                    </button>
+                    <div className="record-actions">
+                      <button
+                        type="button"
+                        className="ghost-button"
+                        title="Bu kaydı yeniden işle"
+                        onClick={() => handleProcessSingle(record.id)}
+                        disabled={Boolean(busy)}
+                      >
+                        İşle
+                      </button>
+                      <button
+                        type="button"
+                        className="ghost-button"
+                        title="Bu kaydı PDF olarak indir"
+                        onClick={() => handleExportSingle(record.id)}
+                        disabled={!record.verification || !record.capture || Boolean(busy)}
+                      >
+                        PDF
+                      </button>
+                    </div>
+                  </div>
                 ))}
               </div>
             )}
@@ -330,17 +365,8 @@ function App() {
 
           <Panel title="3. Dizin doğrulama">
             <div className="actions">
-              <button onClick={() => handleVerify()} disabled={!canVerify || Boolean(busy)}>
-                Doğrula
-              </button>
-              <button onClick={() => handleCapture()} disabled={!evidenceUrl || Boolean(busy)}>
-                Ekran Görüntüsü Al
-              </button>
-              <button onClick={() => handleReport()} disabled={!capture || Boolean(busy)}>
-                Rapor Oluştur
-              </button>
               <button onClick={handleBulkExport} disabled={!records.some((record) => record.verification && record.capture) || Boolean(busy)}>
-                PDF Dışa Aktar
+                Tüm Kayıtları PDF Olarak İndir
               </button>
             </div>
 
@@ -354,12 +380,19 @@ function App() {
                   onChange={(event) => setManualUrl(event.target.value)}
                   placeholder="https://..."
                 />
+                <button
+                  type="button"
+                  onClick={() => handleManualCapture()}
+                  disabled={!manualUrl || Boolean(busy)}
+                >
+                  Bu URL ile Görüntü Al
+                </button>
               </label>
             )}
 
             {exportPdfUrl && (
               <a className="open-report block-link" href={exportPdfUrl} target="_blank" rel="noreferrer">
-                PDF çıktısını aç
+                Toplu PDF çıktısını aç
               </a>
             )}
           </Panel>
@@ -484,6 +517,15 @@ function VerificationResult({ verification }) {
 
 function EmptyState({ text }) {
   return <div className="empty-state">{text}</div>;
+}
+
+function describeRecordStatus(record) {
+  if (record.status === "error") return "Hata oluştu";
+  if (record.report) return "Rapor hazır";
+  if (record.capture) return "Görüntü alındı";
+  if (record.status === "needs-manual") return "Manuel URL gerekli";
+  if (record.verification) return "Kayıt bulundu";
+  return "Okundu";
 }
 
 function enrichMetadata(metadata, verification) {

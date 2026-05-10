@@ -203,16 +203,16 @@ nav a:hover {
 }
 
 .record-row {
-  display: grid;
-  gap: 5px;
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
   width: 100%;
   min-height: auto;
-  padding: 10px 12px;
+  padding: 8px 10px;
   border: 1px solid #d8dee8;
   background: #fff;
   color: #20242b;
-  text-align: left;
-  font-weight: 600;
+  border-radius: 7px;
 }
 
 .record-row:hover,
@@ -221,15 +221,73 @@ nav a:hover {
   background: #f4f7fb;
 }
 
-.record-row span {
+.record-row.has-error {
+  border-color: #e07b7b;
+  background: #fdf3f3;
+}
+
+.record-row .record-main {
+  flex: 1;
+  display: grid;
+  gap: 3px;
+  background: transparent;
+  border: none;
+  padding: 4px 4px;
+  text-align: left;
+  font-weight: 600;
+  min-height: auto;
+  color: inherit;
+  cursor: pointer;
+}
+
+.record-row .record-main span {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.record-row small {
+.record-row .record-main small {
   color: #667085;
   font-weight: 700;
+  font-size: 12px;
+}
+
+.record-row .record-main .record-error {
+  display: block;
+  color: #b14a4a;
+  font-style: normal;
+  font-size: 11.5px;
+  font-weight: 600;
+  white-space: normal;
+  margin-top: 2px;
+}
+
+.record-row .record-actions {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+
+.ghost-button {
+  min-height: 28px;
+  padding: 5px 10px;
+  font-size: 12px;
+  font-weight: 700;
+  border: 1px solid #c5cdd9;
+  background: #fff;
+  color: #20242b;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.ghost-button:hover:not(:disabled) {
+  border-color: #183354;
+  background: #f4f7fb;
+}
+
+.ghost-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 button {
@@ -391,7 +449,31 @@ th {
 }
 
 .manual-url {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: end;
   margin-top: 14px;
+}
+
+.manual-url > span {
+  flex-basis: 100%;
+  font-size: 12px;
+  font-weight: 700;
+  color: #495167;
+}
+
+.manual-url > input {
+  flex: 1 1 220px;
+  min-height: 36px;
+  padding: 6px 10px;
+  border: 1px solid #c5cdd9;
+  border-radius: 6px;
+  font: inherit;
+}
+
+.manual-url > button {
+  min-height: 36px;
 }
 
 .screenshot-box {
