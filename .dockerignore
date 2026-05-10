@@ -1,0 +1,21 @@
+node_modules
+dist
+.git
+.gitignore
+.DS_Store
+npm-debug.log*
+*.log
+
+# Sunucu calisma zamani urun klasorleri (container icinde olusturulacak)
+server/uploads
+server/evidence
+server/reports
+
+# IDE / editor
+.vscode
+.idea
+*.swp
+
+# Test ve gecici dosyalar
+/tmp
+*.tmp
