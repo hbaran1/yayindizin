@@ -71,6 +71,43 @@ app.post("/api/analyze", upload.any(), async (req, res) => {
   }
 });
 
+app.post("/api/fetch-by-doi", async (req, res) => {
+  try {
+    const rawDoi = String((req.body && req.body.doi) || "").trim();
+    const doi = rawDoi.replace(/^https?:\/\/(dx\.)?doi\.org\//i, "").replace(/[.,;)]+$/, "");
+    if (!doi || !/^10\.\d{4,9}\/.+/.test(doi)) {
+      return res.status(400).json({ error: "Gecerli bir DOI girin (orn: 10.xxxx/yyyy)." });
+    }
+
+    const items = [];
+    const failures = [];
+    try {
+      const file = await fetchPdfByDoi(doi);
+      const item = await analyzePdfFile(file);
+      items.push(item);
+    } catch (error) {
+      console.error(`DOI indirme hatasi (${doi}):`, error.message);
+      failures.push({ doi, error: error.message });
+    }
+
+    if (!items.length) {
+      const detail = failures.map((f) => `${f.doi}: ${f.error}`).join(" | ");
+      return res.status(404).json({ error: `DOI icin ucretsiz erisimli PDF bulunamadi. ${detail}` });
+    }
+
+    res.json({
+      fileName: items[0]?.fileName || "",
+      textPreview: items[0]?.textPreview || "",
+      metadata: items[0]?.metadata || {},
+      items,
+      failures
+    });
+  } catch (error) {
+    console.error("/api/fetch-by-doi fatal:", error);
+    res.status(500).json({ error: error.message || "Bilinmeyen hata." });
+  }
+});
+
 app.post("/api/verify", async (req, res) => {
   try {
     const metadata = (req.body && typeof req.body === "object" ? req.body.metadata : null) || {};
@@ -220,6 +257,80 @@ async function analyzePdfFile(file) {
     textPreview: cleanText(text).slice(0, 2000),
     metadata
   };
+}
+
+async function fetchPdfByDoi(doi) {
+  const candidates = [];
+
+  try {
+    const trDizin = await findTrDizinPublicationByDoi(doi);
+    const candidate = trDizin?.source?.fullTextUrl || trDizin?.source?.documentUrl || trDizin?.source?.pdfUrl;
+    if (candidate) candidates.push({ source: "TR Dizin", url: candidate });
+  } catch {}
+
+  try {
+    const unpaywall = await fetchJson(
+      `https://api.unpaywall.org/v2/${encodeURIComponent(doi)}?email=baranhuseyin@gmail.com`,
+      8000
+    );
+    const oaPdf = unpaywall?.best_oa_location?.url_for_pdf;
+    const oaLanding = unpaywall?.best_oa_location?.url;
+    if (oaPdf) candidates.push({ source: "Unpaywall", url: oaPdf });
+    else if (oaLanding) candidates.push({ source: "Unpaywall (landing)", url: oaLanding });
+  } catch {}
+
+  try {
+    const crossref = await fetchJson(`https://api.crossref.org/works/${encodeURIComponent(doi)}`, 8000);
+    const pdfLink = (crossref?.message?.link || []).find((l) => /pdf/i.test(l["content-type"] || "") || /pdf/i.test(l.URL || ""));
+    if (pdfLink?.URL) candidates.push({ source: "Crossref", url: pdfLink.URL });
+  } catch {}
+
+  if (!candidates.length) {
+    throw new Error(`Hicbir kaynakta acik erisimli PDF bulunamadi (TR Dizin / Unpaywall / Crossref).`);
+  }
+
+  const errors = [];
+  for (const candidate of candidates) {
+    try {
+      const file = await downloadPdfTo(candidate.url, doi);
+      console.log(`PDF ${candidate.source} araciligiyla indirildi: ${candidate.url}`);
+      return file;
+    } catch (error) {
+      errors.push(`${candidate.source}: ${error.message}`);
+    }
+  }
+  throw new Error(`PDF aday URL'lerinin hicbiri indirilemedi. ${errors.join(" | ")}`);
+}
+
+async function downloadPdfTo(url, doi) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 30000);
+  let response;
+  try {
+    response = await fetch(url, {
+      signal: controller.signal,
+      redirect: "follow",
+      headers: {
+        "user-agent": "Mozilla/5.0 (compatible; DergiDizinKanit/0.1)",
+        accept: "application/pdf,*/*"
+      }
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+  const buffer = Buffer.from(await response.arrayBuffer());
+  if (buffer.length < 1024) throw new Error(`Dosya cok kucuk (${buffer.length} bayt) — gecerli PDF degil`);
+  if (buffer.slice(0, 4).toString("ascii") !== "%PDF") {
+    throw new Error("Indirilen icerik PDF degil (HTML hata sayfasi olabilir)");
+  }
+
+  const filename = crypto.randomBytes(16).toString("hex");
+  const filepath = path.join(uploadDir, filename);
+  await fs.writeFile(filepath, buffer);
+  const safeName = `${doi.replace(/[^A-Za-z0-9._-]+/g, "_")}.pdf`;
+  return { path: filepath, filename, originalname: safeName, size: buffer.length };
 }
 
 function extractMetadata(rawText, fileName) {
@@ -511,9 +622,9 @@ async function findTrDizinJournalByName(journalName) {
   return hit ? { id: hit._source.id, source: hit._source } : null;
 }
 
-async function fetchJson(url) {
+async function fetchJson(url, timeoutMs = 10000) {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 10000);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetch(url, {
       signal: controller.signal,

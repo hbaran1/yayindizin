@@ -18,6 +18,7 @@ function App() {
   const [records, setRecords] = useState([]);
   const [selectedId, setSelectedId] = useState("");
   const [manualUrl, setManualUrl] = useState("");
+  const [doiInput, setDoiInput] = useState("");
   const [exportPdfUrl, setExportPdfUrl] = useState("");
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
@@ -68,6 +69,42 @@ function App() {
       setRecords(nextRecords);
       setSelectedId(nextRecords[0]?.id || "");
       setManualUrl("");
+      await processRecords(nextRecords);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function handleFetchByDoi(event) {
+    event?.preventDefault?.();
+    const doi = doiInput.trim();
+    if (!doi) return;
+
+    setBusy("DOI'den indiriliyor");
+    setError("");
+    setRecords([]);
+    setSelectedId("");
+    setExportPdfUrl("");
+
+    try {
+      const data = await postJson("/api/fetch-by-doi", { doi });
+      const nextRecords = (data.items || [data]).map((item, index) => ({
+        id: item.id || `${Date.now()}-${index}`,
+        uploadId: item.uploadId,
+        fileName: item.fileName || `DOI-${index + 1}.pdf`,
+        textPreview: item.textPreview || "",
+        metadata: { ...emptyMetadata, ...item.metadata },
+        verification: null,
+        capture: null,
+        report: null,
+        status: "ok"
+      }));
+      setRecords(nextRecords);
+      setSelectedId(nextRecords[0]?.id || "");
+      setManualUrl("");
+      setDoiInput("");
       await processRecords(nextRecords);
     } catch (err) {
       setError(err.message);
@@ -294,6 +331,38 @@ function App() {
                   </button>
                 </div>
               </div>
+
+              <div className="doi-fetch">
+                <div className="doi-fetch-divider"><span>veya</span></div>
+                <label className="doi-fetch-label">
+                  <span>DOI ile içeri aktar</span>
+                  <small>Sistem TR Dizin / Unpaywall / Crossref'ten açık erişimli PDF'i otomatik indirir.</small>
+                </label>
+                <div className="doi-fetch-row">
+                  <input
+                    type="text"
+                    value={doiInput}
+                    onChange={(event) => setDoiInput(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        event.preventDefault();
+                        if (doiInput.trim() && !busy) handleFetchByDoi();
+                      }
+                    }}
+                    placeholder="örn: 10.25253/99.2017193.11"
+                    disabled={Boolean(busy)}
+                  />
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    onClick={handleFetchByDoi}
+                    disabled={!doiInput.trim() || Boolean(busy)}
+                  >
+                    DOI'den İndir
+                  </button>
+                </div>
+              </div>
+
               <button type="submit" disabled={Boolean(busy)}>
                 İşle
               </button>

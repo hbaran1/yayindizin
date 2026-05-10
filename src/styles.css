@@ -274,6 +274,70 @@ button:disabled {
   background: #eef3f8;
 }
 
+.doi-fetch {
+  margin-top: 14px;
+  padding-top: 14px;
+}
+
+.doi-fetch-divider {
+  position: relative;
+  text-align: center;
+  margin-bottom: 12px;
+  height: 1px;
+  background: #e2e7ef;
+}
+
+.doi-fetch-divider span {
+  position: relative;
+  top: -10px;
+  padding: 0 12px;
+  background: #fff;
+  color: #99a1ad;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.doi-fetch-label {
+  display: block;
+  margin-bottom: 6px;
+}
+
+.doi-fetch-label span {
+  display: block;
+  font-size: 13px;
+  font-weight: 700;
+  color: #20242b;
+}
+
+.doi-fetch-label small {
+  display: block;
+  margin-top: 2px;
+  color: #667085;
+  font-size: 11.5px;
+  font-weight: 500;
+}
+
+.doi-fetch-row {
+  display: flex;
+  gap: 8px;
+}
+
+.doi-fetch-row input {
+  flex: 1;
+  min-height: 36px;
+  padding: 6px 10px;
+  border: 1px solid #c5cdd9;
+  border-radius: 6px;
+  font: inherit;
+  background: #fff;
+}
+
+.doi-fetch-row button {
+  flex: 0 0 auto;
+}
+
 .metadata-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
